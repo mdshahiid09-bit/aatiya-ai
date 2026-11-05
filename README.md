@@ -1,5 +1,6 @@
 # 🌟 AATIYA AI - Real-Time Gemini Live Voice Assistant
 
+[![Build AATIYA AI APK](https://github.com/mdshahiid09-bit/aatiya-ai/actions/workflows/android.yml/badge.svg)](https://github.com/mdshahiid09-bit/aatiya-ai/actions/workflows/android.yml)
 [![Android](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](https://android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin%202.0-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)](https://developer.android.com/jetpack/compose)
