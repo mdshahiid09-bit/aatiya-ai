@@ -16,13 +16,15 @@ class GeminiLiveClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS) // Keep alive for WebSocket
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 ) {
 
     companion object {
-        const val LIVE_WS_BASE =
+        const val LIVE_WS_BASE_V1BETA =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        const val LIVE_WS_BASE_V1ALPHA =
+            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
 
         fun createSetupPayload(
             modelPath: String,
@@ -115,17 +117,35 @@ class GeminiLiveClient(
     ) {
         disconnect()
 
+        val cleanKey = apiKey.trim()
         val cleanModel = modelName.trim().removePrefix("models/")
         val fullModelPath = "models/$cleanModel"
 
-        val url = if (!ephemeralToken.isNullOrBlank()) {
-            "$LIVE_WS_BASE?access_token=$ephemeralToken"
-        } else {
-            "$LIVE_WS_BASE?key=${apiKey.trim()}"
-        }
+        connectInternal(
+            baseUrl = LIVE_WS_BASE_V1BETA,
+            apiKey = cleanKey,
+            fullModelPath = fullModelPath,
+            cleanModel = cleanModel,
+            voiceName = voiceName,
+            systemInstruction = systemInstruction,
+            allowAlphaFallback = true
+        )
+    }
+
+    private fun connectInternal(
+        baseUrl: String,
+        apiKey: String,
+        fullModelPath: String,
+        cleanModel: String,
+        voiceName: String,
+        systemInstruction: String?,
+        allowAlphaFallback: Boolean
+    ) {
+        val url = "$baseUrl?key=$apiKey"
 
         val request = Request.Builder()
             .url(url)
+            .addHeader("x-goog-api-key", apiKey)
             .build()
 
         activeWebSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
@@ -144,27 +164,70 @@ class GeminiLiveClient(
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 isConnected.set(false)
                 isSetupComplete.set(false)
-                listener?.onDisconnected("Closing: $reason (code $code)")
+                if (code != 1000) {
+                    listener?.onError("Gemini Live server closed session (Code $code): ${reason.ifEmpty { "Server rejected stream" }}")
+                } else {
+                    listener?.onDisconnected("Session closing (code $code)")
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 isConnected.set(false)
                 isSetupComplete.set(false)
-                listener?.onDisconnected("Closed: $reason (code $code)")
+                if (code != 1000) {
+                    listener?.onError("Gemini Live session closed (Code $code): ${reason.ifEmpty { "Unexpected server disconnect" }}")
+                } else {
+                    listener?.onDisconnected("Session ended normally")
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isConnected.set(false)
                 isSetupComplete.set(false)
-                val statusMessage = response?.let { "HTTP ${it.code}: ${it.message}" }
+
+                // If v1beta returned 404, fallback automatically to v1alpha
+                if (allowAlphaFallback && response?.code == 404 && baseUrl == LIVE_WS_BASE_V1BETA) {
+                    connectInternal(
+                        baseUrl = LIVE_WS_BASE_V1ALPHA,
+                        apiKey = apiKey,
+                        fullModelPath = fullModelPath,
+                        cleanModel = cleanModel,
+                        voiceName = voiceName,
+                        systemInstruction = systemInstruction,
+                        allowAlphaFallback = false
+                    )
+                    return
+                }
+
+                val errorBody = try { response?.body?.string() } catch (_: Exception) { null }
+                val parsed = parseErrorJson(errorBody)
+
                 val errorMsg = when {
-                    statusMessage != null -> "Gemini Live WebSocket failure: $statusMessage"
-                    t.message != null -> "Gemini Live error: ${t.message}"
+                    !parsed.isNullOrBlank() -> parsed
+                    response != null -> "Gemini Live rejected connection (HTTP ${response.code}): ${response.message.ifEmpty { "Check API key and live model access." }}"
+                    t.message != null -> "Live connection error: ${t.message}"
                     else -> "Connection failed. Please verify API key and network."
                 }
                 listener?.onError(errorMsg)
             }
         })
+    }
+
+    private fun parseErrorJson(body: String?): String? {
+        if (body.isNullOrBlank()) return null
+        return try {
+            val root = JSONObject(body)
+            val error = root.optJSONObject("error")
+            val message = error?.optString("message")
+            val status = error?.optString("status")
+            if (!message.isNullOrBlank()) {
+                "Gemini Live: $message ($status)"
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            body
+        }
     }
 
     fun sendAudioChunk(pcmBytes: ByteArray, offset: Int, length: Int) {
@@ -197,19 +260,22 @@ class GeminiLiveClient(
                 return
             }
 
-            if (root.has("setupComplete")) {
+            if (root.has("setupComplete") || root.has("setup_complete")) {
                 isSetupComplete.set(true)
                 listener?.onSetupCompleted()
                 return
             }
 
-            val serverContent = root.optJSONObject("serverContent") ?: return
+            val serverContent = root.optJSONObject("serverContent")
+                ?: root.optJSONObject("server_content")
+                ?: return
 
             if (serverContent.optBoolean("interrupted", false)) {
                 listener?.onInterrupted()
             }
 
             val modelTurn = serverContent.optJSONObject("modelTurn")
+                ?: serverContent.optJSONObject("model_turn")
             if (modelTurn != null) {
                 val parts = modelTurn.optJSONArray("parts")
                 if (parts != null) {
@@ -222,8 +288,10 @@ class GeminiLiveClient(
                         }
 
                         val inlineData = part.optJSONObject("inlineData")
+                            ?: part.optJSONObject("inline_data")
                         if (inlineData != null) {
                             val mimeType = inlineData.optString("mimeType", "")
+                                .ifEmpty { inlineData.optString("mime_type", "") }
                             if (mimeType.startsWith("audio/pcm")) {
                                 val base64Audio = inlineData.optString("data", "")
                                 if (base64Audio.isNotEmpty()) {
@@ -236,7 +304,8 @@ class GeminiLiveClient(
                 }
             }
 
-            if (serverContent.optBoolean("turnComplete", false)) {
+            if (serverContent.optBoolean("turnComplete", false) ||
+                serverContent.optBoolean("turn_complete", false)) {
                 listener?.onTurnComplete()
             }
         } catch (e: Exception) {

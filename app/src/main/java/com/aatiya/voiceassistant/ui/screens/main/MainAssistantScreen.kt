@@ -73,6 +73,7 @@ import com.aatiya.voiceassistant.ui.theme.PrimaryCyan
 import com.aatiya.voiceassistant.ui.theme.PrimaryPurple
 import com.aatiya.voiceassistant.ui.theme.StateError
 import com.aatiya.voiceassistant.ui.theme.StateListening
+import com.aatiya.voiceassistant.ui.theme.StateSpeaking
 import com.aatiya.voiceassistant.ui.theme.TextMuted
 import com.aatiya.voiceassistant.ui.theme.TextPrimary
 import com.aatiya.voiceassistant.viewmodel.MainViewModel
@@ -90,6 +91,7 @@ fun MainAssistantScreen(
     val liveTranscript by viewModel.liveTranscript.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val activeError by viewModel.activeError.collectAsState()
+    val isConfigured by viewModel.isConfigured.collectAsState()
 
     var typedMessage by remember { mutableStateOf("") }
     var showDiagnostics by remember { mutableStateOf(false) }
@@ -107,7 +109,6 @@ fun MainAssistantScreen(
             context,
             Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
-
         if (hasPermission) {
             viewModel.toggleVoiceSession()
         } else {
@@ -140,6 +141,7 @@ fun MainAssistantScreen(
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -200,6 +202,35 @@ fun MainAssistantScreen(
                 }
             }
 
+            // Unconfigured Warning Banner
+            if (!isConfigured) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(PrimaryPurple.copy(alpha = 0.25f))
+                        .border(1.dp, PrimaryPurple, RoundedCornerShape(12.dp))
+                        .clickable { onNavigateSettings() }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = PrimaryPurple,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Gemini API key is not configured. Tap here to enter key in Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White
+                    )
+                }
+            }
+
+            // Error Banner
             AnimatedVisibility(
                 visible = activeError != null,
                 enter = fadeIn(),
@@ -240,6 +271,7 @@ fun MainAssistantScreen(
 
             Spacer(modifier = Modifier.weight(0.4f))
 
+            // Central Glowing Orb
             OrbVisualizer(
                 state = assistantState,
                 amplitude = audioAmplitude,
@@ -248,18 +280,22 @@ fun MainAssistantScreen(
 
             Spacer(modifier = Modifier.weight(0.4f))
 
+            // Live Caption Card
             val lastUserMsg = messages.lastOrNull { it.role == com.aatiya.voiceassistant.domain.model.MessageRole.USER }?.text
+            val lastModelMsg = messages.lastOrNull { it.role == com.aatiya.voiceassistant.domain.model.MessageRole.MODEL }?.text
             LiveCaptionCard(
                 captionText = liveTranscript,
                 state = assistantState,
                 lastUserMessage = lastUserMsg,
+                lastModelResponse = lastModelMsg,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(130.dp)
+                    .height(150.dp)
             )
 
             Spacer(modifier = Modifier.height(20.dp))
 
+            // Main Microphone Toggle Button
             val isVoiceActive = assistantState == AssistantState.LISTENING ||
                     assistantState == AssistantState.SPEAKING ||
                     assistantState == AssistantState.CONNECTING
@@ -310,6 +346,7 @@ fun MainAssistantScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Text Query Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -21,12 +21,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.aatiya.voiceassistant.domain.model.AssistantState
 import com.aatiya.voiceassistant.ui.theme.DarkSurface
 import com.aatiya.voiceassistant.ui.theme.DarkSurfaceBorder
+import com.aatiya.voiceassistant.ui.theme.DarkSurfaceVariant
 import com.aatiya.voiceassistant.ui.theme.PrimaryCyan
 import com.aatiya.voiceassistant.ui.theme.PrimaryPurple
+import com.aatiya.voiceassistant.ui.theme.StateListening
+import com.aatiya.voiceassistant.ui.theme.StateSpeaking
 import com.aatiya.voiceassistant.ui.theme.TextMuted
 import com.aatiya.voiceassistant.ui.theme.TextPrimary
 import com.aatiya.voiceassistant.ui.theme.TextSecondary
@@ -36,6 +41,7 @@ fun LiveCaptionCard(
     captionText: String,
     state: AssistantState,
     lastUserMessage: String? = null,
+    lastModelResponse: String? = null,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -44,15 +50,16 @@ fun LiveCaptionCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(DarkSurface.copy(alpha = 0.9f))
+            .background(DarkSurface.copy(alpha = 0.95f))
             .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(18.dp))
-            .padding(16.dp)
+            .padding(14.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(scrollState)
         ) {
+            // User query header if present
             if (!lastUserMessage.isNullOrBlank()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
@@ -68,44 +75,84 @@ fun LiveCaptionCard(
                         color = PrimaryCyan
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = lastUserMessage,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // AI Status / Response Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val headerDotColor = when (state) {
+                    AssistantState.LISTENING -> StateListening
+                    AssistantState.SPEAKING -> StateSpeaking
+                    AssistantState.PROCESSING, AssistantState.CONNECTING -> PrimaryCyan
+                    else -> PrimaryPurple
+                }
+
                 Box(
                     modifier = Modifier
                         .size(6.dp)
                         .clip(CircleShape)
-                        .background(PrimaryPurple)
+                        .background(headerDotColor)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "AATIYA AI",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = PrimaryPurple
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.5.sp),
+                    color = headerDotColor
                 )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
 
-            val displayCaption = when {
-                captionText.isNotEmpty() -> captionText
-                state == AssistantState.LISTENING -> "Listening to your voice..."
-                state == AssistantState.PROCESSING -> "Processing input..."
-                state == AssistantState.SPEAKING -> "Responding..."
-                state == AssistantState.CONNECTING -> "Initiating Gemini Live WebSocket session..."
-                else -> "Tap the microphone to start real-time conversation or type a message below."
+                Spacer(modifier = Modifier.width(8.dp))
+
+                val stateLabel = when (state) {
+                    AssistantState.CONNECTING -> "Connecting Live..."
+                    AssistantState.LISTENING -> "Listening..."
+                    AssistantState.PROCESSING -> "Thinking..."
+                    AssistantState.SPEAKING -> "Speaking..."
+                    else -> if (!lastModelResponse.isNullOrBlank() || captionText.isNotBlank()) "Response" else ""
+                }
+
+                if (stateLabel.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(DarkSurfaceVariant)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = stateLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = headerDotColor
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Body content selection
+            val (displayText, isPlaceholder) = when {
+                captionText.isNotBlank() -> Pair(captionText, false)
+                state == AssistantState.PROCESSING -> Pair("Thinking... Generating response...", true)
+                state == AssistantState.SPEAKING -> Pair("Speaking... Playing Gemini Live audio", false)
+                state == AssistantState.CONNECTING -> Pair("Connecting to Gemini Live WebSocket...", true)
+                !lastModelResponse.isNullOrBlank() -> Pair(lastModelResponse, false)
+                state == AssistantState.LISTENING -> Pair("Listening to your voice... Speak now", true)
+                else -> Pair("Ask AATIYA anything in Hindi or English, or tap the mic for live voice.", true)
             }
 
             Text(
-                text = displayCaption,
-                style = MaterialTheme.typography.bodyLarge,
-                color = if (captionText.isNotEmpty()) TextPrimary else TextMuted
+                text = displayText,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isPlaceholder) TextMuted else TextPrimary,
+                lineHeight = 20.sp
             )
         }
     }

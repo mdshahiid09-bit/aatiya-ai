@@ -46,6 +46,7 @@ class LiveAssistantRepository(
     val activeError: StateFlow<String?> = _activeError.asStateFlow()
 
     private var activeTurnTextBuilder = StringBuilder()
+    private var hasReceivedAudioInTurn = false
     private var amplitudeJob: Job? = null
 
     init {
@@ -64,6 +65,7 @@ class LiveAssistantRepository(
                 _connectionState.value = ConnectionState.Connected()
                 _assistantState.value = AssistantState.LISTENING
 
+                // Start microphone capture
                 val started = audioRecorder.startRecording { buffer, offset, length ->
                     liveClient.sendAudioChunk(buffer, offset, length)
                 }
@@ -74,7 +76,11 @@ class LiveAssistantRepository(
             }
 
             override fun onAudioReceived(pcmBytes: ByteArray) {
+                hasReceivedAudioInTurn = true
                 _assistantState.value = AssistantState.SPEAKING
+                if (_liveTranscript.value.isEmpty() && activeTurnTextBuilder.isEmpty()) {
+                    _liveTranscript.value = "🔊 Speaking..."
+                }
                 audioPlayer.enqueueAudio(pcmBytes)
             }
 
@@ -84,17 +90,38 @@ class LiveAssistantRepository(
             }
 
             override fun onInterrupted() {
+                // Barge-in occurred! User interrupted Gemini
                 audioPlayer.interruptAndClear()
                 _assistantState.value = AssistantState.LISTENING
                 if (activeTurnTextBuilder.isNotEmpty()) {
                     commitActiveTurn(isInterrupted = true)
+                } else if (hasReceivedAudioInTurn) {
+                    val chatMsg = ChatMessage(
+                        role = MessageRole.MODEL,
+                        text = "🔊 [Interrupted]",
+                        isLiveVoice = true
+                    )
+                    _messages.value = _messages.value + chatMsg
+                    _liveTranscript.value = ""
                 }
+                hasReceivedAudioInTurn = false
             }
 
             override fun onTurnComplete() {
                 if (activeTurnTextBuilder.isNotEmpty()) {
                     commitActiveTurn(isInterrupted = false)
+                } else if (hasReceivedAudioInTurn) {
+                    val chatMsg = ChatMessage(
+                        role = MessageRole.MODEL,
+                        text = "🔊 [Gemini Voice Response]",
+                        isLiveVoice = true
+                    )
+                    _messages.value = _messages.value + chatMsg
+                    _liveTranscript.value = ""
                 }
+                hasReceivedAudioInTurn = false
+
+                // Transition state back to listening if session is still alive
                 if (liveClient.isSessionActive()) {
                     _assistantState.value = AssistantState.LISTENING
                 }
@@ -104,6 +131,7 @@ class LiveAssistantRepository(
                 _activeError.value = message
                 _connectionState.value = ConnectionState.Error(message)
                 _assistantState.value = AssistantState.ERROR
+                hasReceivedAudioInTurn = false
                 cleanupSession()
             }
 
@@ -112,6 +140,7 @@ class LiveAssistantRepository(
                 if (_assistantState.value != AssistantState.ERROR) {
                     _assistantState.value = AssistantState.IDLE
                 }
+                hasReceivedAudioInTurn = false
                 cleanupSession()
             }
         })
@@ -146,6 +175,9 @@ class LiveAssistantRepository(
         _liveTranscript.value = ""
     }
 
+    /**
+     * Starts continuous real-time Gemini Live voice conversation directly over WebSocket.
+     */
     fun startLiveSession() {
         val apiKey = settingsRepository.getApiKey()
         if (apiKey.isNullOrBlank()) {
@@ -157,25 +189,24 @@ class LiveAssistantRepository(
         _activeError.value = null
         _assistantState.value = AssistantState.CONNECTING
         _connectionState.value = ConnectionState.Connecting
+        hasReceivedAudioInTurn = false
 
         val model = settingsRepository.getLiveModel()
         val voice = settingsRepository.getVoice()
         val systemInstruction = settingsRepository.getSystemInstruction()
 
-        scope.launch(Dispatchers.IO) {
-            val tokenResult = restClient.requestEphemeralToken(apiKey)
-            val ephemeralToken = tokenResult.getOrNull()
-
-            liveClient.connect(
-                apiKey = apiKey,
-                modelName = model,
-                voiceName = voice,
-                systemInstruction = systemInstruction,
-                ephemeralToken = ephemeralToken
-            )
-        }
+        liveClient.connect(
+            apiKey = apiKey,
+            modelName = model,
+            voiceName = voice,
+            systemInstruction = systemInstruction,
+            ephemeralToken = null
+        )
     }
 
+    /**
+     * Gracefully stops the active Live voice session.
+     */
     fun stopLiveSession() {
         cleanupSession()
         _assistantState.value = AssistantState.IDLE
@@ -189,18 +220,23 @@ class LiveAssistantRepository(
         if (activeTurnTextBuilder.isNotEmpty()) {
             commitActiveTurn(false)
         }
+        hasReceivedAudioInTurn = false
     }
 
+    /**
+     * Sends a text message to Gemini Text model and updates live response immediately.
+     */
     fun sendTextMessage(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
 
         val apiKey = settingsRepository.getApiKey()
         if (apiKey.isNullOrBlank()) {
-            _activeError.value = "Gemini API key is not configured."
+            _activeError.value = "Gemini API key is not configured. Please enter your key in settings."
             return
         }
 
+        _activeError.value = null
         val userMsg = ChatMessage(
             role = MessageRole.USER,
             text = trimmed,
@@ -209,6 +245,7 @@ class LiveAssistantRepository(
         _messages.value = _messages.value + userMsg
 
         _assistantState.value = AssistantState.PROCESSING
+        _liveTranscript.value = ""
 
         scope.launch {
             val model = settingsRepository.getTextModel()
@@ -227,6 +264,7 @@ class LiveAssistantRepository(
                     isLiveVoice = false
                 )
                 _messages.value = _messages.value + modelMsg
+                _liveTranscript.value = reply
                 _assistantState.value = if (liveClient.isSessionActive()) AssistantState.LISTENING else AssistantState.IDLE
             }.onFailure { err ->
                 _activeError.value = err.message ?: "Failed to generate text response."
