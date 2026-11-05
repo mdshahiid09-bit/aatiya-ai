@@ -16,13 +16,72 @@ class GeminiLiveClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS) // Keep alive for WebSocket
         .build()
 ) {
 
     companion object {
-        private const val LIVE_WS_BASE =
+        const val LIVE_WS_BASE =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+
+        fun createSetupPayload(
+            modelPath: String,
+            voiceName: String,
+            systemInstruction: String?
+        ): String {
+            val root = JSONObject()
+            val setup = JSONObject()
+            setup.put("model", modelPath)
+
+            val generationConfig = JSONObject()
+            val modalities = JSONArray().put("AUDIO")
+            generationConfig.put("responseModalities", modalities)
+
+            val speechConfig = JSONObject()
+            val voiceConfig = JSONObject()
+            val prebuiltVoiceConfig = JSONObject().put("voiceName", voiceName)
+            voiceConfig.put("prebuiltVoiceConfig", prebuiltVoiceConfig)
+            speechConfig.put("voiceConfig", voiceConfig)
+            generationConfig.put("speechConfig", speechConfig)
+
+            setup.put("generationConfig", generationConfig)
+
+            if (!systemInstruction.isNullOrBlank()) {
+                val sysInst = JSONObject()
+                val parts = JSONArray().put(JSONObject().put("text", systemInstruction))
+                sysInst.put("parts", parts)
+                setup.put("systemInstruction", sysInst)
+            }
+
+            root.put("setup", setup)
+            return root.toString()
+        }
+
+        fun createRealtimeAudioPayload(base64Data: String): String {
+            val root = JSONObject()
+            val realtimeInput = JSONObject()
+            val mediaChunks = JSONArray()
+
+            val chunk = JSONObject()
+            chunk.put("mimeType", "audio/pcm;rate=16000")
+            chunk.put("data", base64Data)
+
+            mediaChunks.put(chunk)
+            realtimeInput.put("mediaChunks", mediaChunks)
+            root.put("realtimeInput", realtimeInput)
+            return root.toString()
+        }
+    }
+
+    object ProtocolHelper {
+        fun createSetupPayload(
+            modelPath: String,
+            voiceName: String,
+            systemInstruction: String?
+        ): String = Companion.createSetupPayload(modelPath, voiceName, systemInstruction)
+
+        fun createRealtimeAudioPayload(base64Data: String): String =
+            Companion.createRealtimeAudioPayload(base64Data)
     }
 
     interface Listener {
@@ -182,56 +241,6 @@ class GeminiLiveClient(
             }
         } catch (e: Exception) {
             listener?.onError("Failed to parse Gemini Live packet: ${e.message}")
-        }
-    }
-
-    companion object ProtocolHelper {
-        fun createSetupPayload(
-            modelPath: String,
-            voiceName: String,
-            systemInstruction: String?
-        ): String {
-            val root = JSONObject()
-            val setup = JSONObject()
-            setup.put("model", modelPath)
-
-            val generationConfig = JSONObject()
-            val modalities = JSONArray().put("AUDIO")
-            generationConfig.put("responseModalities", modalities)
-
-            val speechConfig = JSONObject()
-            val voiceConfig = JSONObject()
-            val prebuiltVoiceConfig = JSONObject().put("voiceName", voiceName)
-            voiceConfig.put("prebuiltVoiceConfig", prebuiltVoiceConfig)
-            speechConfig.put("voiceConfig", voiceConfig)
-            generationConfig.put("speechConfig", speechConfig)
-
-            setup.put("generationConfig", generationConfig)
-
-            if (!systemInstruction.isNullOrBlank()) {
-                val sysInst = JSONObject()
-                val parts = JSONArray().put(JSONObject().put("text", systemInstruction))
-                sysInst.put("parts", parts)
-                setup.put("systemInstruction", sysInst)
-            }
-
-            root.put("setup", setup)
-            return root.toString()
-        }
-
-        fun createRealtimeAudioPayload(base64Data: String): String {
-            val root = JSONObject()
-            val realtimeInput = JSONObject()
-            val mediaChunks = JSONArray()
-
-            val chunk = JSONObject()
-            chunk.put("mimeType", "audio/pcm;rate=16000")
-            chunk.put("data", base64Data)
-
-            mediaChunks.put(chunk)
-            realtimeInput.put("mediaChunks", mediaChunks)
-            root.put("realtimeInput", realtimeInput)
-            return root.toString()
         }
     }
 }
